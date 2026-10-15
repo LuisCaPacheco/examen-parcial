@@ -1,0 +1,2 @@
+PLACEHOLDER — se actualiza al primer deploy sano. Formato: <ECR_URL>:<tag>
+Ejemplo: 123456789012.dkr.ecr.us-east-1.amazonaws.com/examen-parcial-app:stable

@@ -1,0 +1,8 @@
+flowchart LR
+  GH[GitHub main] -->|app/**| APP[workflow app.yml<br/>build-Trivy-push-deploy-test-rollback]
+  GH -->|infra/**| INFRA[workflow infra.yml<br/>fmt-validate-Checkov-apply]
+  APP --> ECR[(ECR :sha / :stable)]
+  INFRA --> VPC[VPC + SG + EC2 + ECR]
+  ECR --> EC2[EC2 Docker + nginx]
+  EC2 -->|/health /api/hello| USER((URL publica))
+  APP -->|falla| RB[rollback a :stable + logs]

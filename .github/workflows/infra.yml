@@ -1,0 +1,76 @@
+name: infra-validate-apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra*.yml'
+  pull_request:
+    paths:
+      - 'infra/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  AWS_REGION: us-east-1
+  TF_DIR: infra/terraform
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+      - name: terraform fmt (check)
+        run: terraform -chdir=${{ env.TF_DIR }} fmt -check -recursive
+      - name: terraform init
+        run: terraform -chdir=${{ env.TF_DIR }} init -backend=false
+      - name: terraform validate
+        run: terraform -chdir=${{ env.TF_DIR }} validate
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ env.TF_DIR }}
+          framework: terraform
+          output_format: sarif
+          output_file_path: checkov.sarif
+      - name: Upload Checkov evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-infra
+          path: checkov.sarif
+
+  apply:
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+          terraform_wrapper: false
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: init/plan/apply
+        run: |
+          terraform -chdir=${{ env.TF_DIR }} init
+          terraform -chdir=${{ env.TF_DIR }} plan -out=tfplan -var="admin_ip=${{ secrets.ADMIN_IP }}/32"
+          terraform -chdir=${{ env.TF_DIR }} apply -auto-approve tfplan
+          terraform -chdir=${{ env.TF_DIR }} output -json | tee infra-outputs.json
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-outputs
+          path: infra/terraform/infra-outputs.json

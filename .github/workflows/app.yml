@@ -1,0 +1,97 @@
+name: app-build-deploy-rollback
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'Dockerfile'
+      - '.github/workflows/app*.yml'
+  workflow_dispatch:
+    inputs:
+      should_fail:
+        description: 'Simular version defectuosa (SHOULD_FAIL=true) para demo de rollback'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  id-token: write  # OIDC hacia AWS (recomendado). Si usan keys, se usan secrets.
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: examen-parcial-app
+
+jobs:
+  build-scan-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.img.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login ECR
+        id: login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        id: img
+        run: |
+          REG=${{ steps.login.outputs.registry }}
+          SHA=${GITHUB_SHA::12}
+          IMG=$REG/${{ env.ECR_REPO }}:$SHA
+          echo "image=$IMG" >> $GITHUB_OUTPUT
+          docker build -t $IMG \
+            --build-arg APP_VERSION=$SHA \
+            -f Dockerfile .
+          # Inyecta version: re-tag con env
+          echo $IMG > /tmp/candidate.txt
+
+      - name: Trivy scan (bloquea HIGH,CRITICAL)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.img.outputs.image }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: Push candidate
+        if: success()
+        run: docker push ${{ steps.img.outputs.image }}
+
+      - name: Upload Trivy evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-candidate
+          path: trivy-results.sarif
+
+  deploy-and-verify:
+    needs: build-scan-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy candidate to EC2 + health + functional + rollback
+        env:
+          CANDIDATE: ${{ needs.build-scan-push.outputs.image }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ec2-user
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          FAIL_MODE: ${{ inputs.should_fail }}
+        run: |
+          chmod +x scripts/deploy_with_rollback.sh
+          ./scripts/deploy_with_rollback.sh

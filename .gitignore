@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+logs/
+infra/terraform/.terraform/
+infra/terraform/*.tfstate*
+infra/terraform/*.tfplan
+infra/terraform/tfplan
+infra/terraform/infra-outputs.json
+/tmp/
