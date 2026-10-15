@@ -30,8 +30,12 @@ wait_healthy() { # $1 = base_url
   return 1
 }
 
-# 1. Desplegar candidata via Terraform
-terraform -chdir="$TF_DIR" init -input=false
+# 1. Desplegar candidata via Terraform (state remoto compartido)
+terraform -chdir="$TF_DIR" init -input=false \
+  -backend-config="resource_group_name=${TF_BACKEND_RG:?}" \
+  -backend-config="storage_account_name=${TF_BACKEND_SA:?}" \
+  -backend-config="container_name=${TF_BACKEND_CONTAINER:?}" \
+  -backend-config="key=${TF_BACKEND_KEY:?}"
 terraform -chdir="$TF_DIR" apply -auto-approve -input=false \
   -var="container_image_tag=${CANDIDATE_TAG}" \
   -var="should_fail=${SHOULD_FAIL}"

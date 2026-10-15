@@ -19,11 +19,20 @@ permissions:
   contents: read
   id-token: write  # OIDC hacia Azure (federated credentials, sin secretos de larga vida)
 
+# Serializa los applys: infra y app comparten el state remoto
+concurrency:
+  group: terraform-examen-parcial-t5
+  cancel-in-progress: false
+
 env:
   ACR_NAME: exparcialt5ody01
   IMAGE_NAME: app
   RG: rg-examen-parcial-t5
   ACI_NAME: aci-examen-parcial-t5
+  TF_BACKEND_RG: rg-tfstate-examen
+  TF_BACKEND_SA: stexparcialt5ody01
+  TF_BACKEND_CONTAINER: tfstate
+  TF_BACKEND_KEY: examen-parcial-t5.tfstate
 
 jobs:
   build-scan-push:

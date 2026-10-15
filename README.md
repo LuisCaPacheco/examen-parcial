@@ -38,12 +38,36 @@ curl http://localhost:18081/health      # 500 fail (esperado)
 docker rm -f odyssey-fail
 ```
 
-## 3. Requisitos Azure
+## 3. Requisitos Azure (una sola vez)
 
-- Suscripción pago por uso + federated credentials (OIDC) para GitHub. Secrets (nunca en el repo):
-  - `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`.
-- Nombres únicos globales: si el ACR o el `dns_label` colisionan, cambiar `acr_name` / `dns_label` en `infra/terraform/variables.tf` (y el `ACR_NAME` del workflow debe coincidir).
-- Terraform >= 1.6 solo para cambios locales; el CI usa 1.9.0.
+```powershell
+winget install Microsoft.AzureCLI
+az login
+az account show  # anota subscriptionId (SUB_ID) y tenantId (TENANT_ID)
+```
+
+**3.1. Storage para el state de Terraform** (los runners son efímeros; sin esto, infra y app se pisan):
+```bash
+az group create -n rg-tfstate-examen -l eastus
+az storage account create -n stexparcialt5ody01 -g rg-tfstate-examen -l eastus --sku Standard_LRS
+az storage container create -n tfstate --account-name stexparcialt5ody01
+```
+Si el storage name está ocupado (único global), elige otro y actualiza `TF_BACKEND_SA` en ambos workflows.
+Igual con el ACR: `az acr check-name --name exparcialt5ody01` (si está tomado, cambia `acr_name` en `variables.tf` y `ACR_NAME` en `app.yml`).
+
+**3.2. OIDC para GitHub (sin guardar passwords):**
+```bash
+APP_ID=$(az ad app create --display-name examen-parcial-t5-oidc --query appId -o tsv)
+az ad sp create --id $APP_ID
+az ad app federated-credential create --id $APP_ID --parameters '{"name":"github-main","issuer":"https://token.actions.githubusercontent.com","subject":"repo:LuisCaPacheco/examen-parcial:ref:refs/heads/main","audiences":["api://AzureADTokenExchange"]}'
+az role assignment create --assignee $APP_ID --role Contributor --scope /subscriptions/<SUB_ID>
+echo "CLIENT_ID=$APP_ID"
+```
+
+**3.3. Secrets del repo** (Settings > Secrets and variables > Actions, o con `gh secret set`):
+- `AZURE_CLIENT_ID` = APP_ID, `AZURE_TENANT_ID` = TENANT_ID, `AZURE_SUBSCRIPTION_ID` = SUB_ID.
+
+**3.4. Orden del primer despliegue:** primero corre el workflow `infra-validate-apply` (crea RG/ACR/ACI; el ACI queda en ImagePull hasta el primer push, es normal), luego `app-build-deploy-rollback` (publica `:sha`, la prueba y la promueve a `:stable`). Hay `concurrency` para que no se pisen.
 
 ## 4. Despliegue desde cero (orden)
 
