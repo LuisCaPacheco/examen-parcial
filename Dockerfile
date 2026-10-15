@@ -1,12 +1,8 @@
 # Imagen minima para el taller 5 - THE ODYSSEY
-# bookworm (no trixie): menos CVEs HIGH/CRITICAL pendientes en la base
-FROM python:3.12-slim-bookworm
+# Alpine: superficie minima -> Trivy HIGH,CRITICAL limpio (Debian trae CVEs sin fix)
+FROM python:3.12-alpine
 
-# Parchea paquetes del SO en el build (reduce superficie de Trivy)
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
-
-# Limite de recursos / buena practica: usuario no root
-RUN useradd -m appuser
+RUN adduser -D appuser
 WORKDIR /app
 
 COPY app/requirements.txt .
