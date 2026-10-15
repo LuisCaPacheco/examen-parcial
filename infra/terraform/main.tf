@@ -93,7 +93,7 @@ resource "azurerm_container_group" "app" {
 
   # Sin username/password: la identidad con rol AcrPull autentica contra el ACR
   image_registry_credential {
-    server                 = azurerm_container_registry.app.login_server
+    server                    = azurerm_container_registry.app.login_server
     user_assigned_identity_id = azurerm_user_assigned_identity.aci.id
   }
 
