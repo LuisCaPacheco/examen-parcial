@@ -27,6 +27,11 @@ env:
   TF_BACKEND_SA: stexparcialt5ody01
   TF_BACKEND_CONTAINER: tfstate
   TF_BACKEND_KEY: examen-parcial-t5.tfstate
+  # Auth del provider/backend azurerm via OIDC (no usa Azure CLI)
+  ARM_USE_OIDC: true
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
   validate:
