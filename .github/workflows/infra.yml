@@ -17,7 +17,6 @@ permissions:
   pull-requests: write
 
 env:
-  AWS_REGION: us-east-1
   TF_DIR: infra/terraform
 
 jobs:
@@ -58,15 +57,16 @@ jobs:
         with:
           terraform_version: 1.9.0
           terraform_wrapper: false
-      - name: Configure AWS (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: init/plan/apply
         run: |
           terraform -chdir=${{ env.TF_DIR }} init
-          terraform -chdir=${{ env.TF_DIR }} plan -out=tfplan -var="admin_ip=${{ secrets.ADMIN_IP }}/32"
+          terraform -chdir=${{ env.TF_DIR }} plan -out=tfplan
           terraform -chdir=${{ env.TF_DIR }} apply -auto-approve tfplan
           terraform -chdir=${{ env.TF_DIR }} output -json | tee infra-outputs.json
       - name: Upload outputs

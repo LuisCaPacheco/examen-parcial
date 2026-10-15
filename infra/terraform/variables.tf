@@ -1,11 +1,11 @@
-variable "aws_region" {
-  description = "Region AWS"
+variable "location" {
+  description = "Region Azure (eastus = bajo costo)"
   type        = string
-  default     = "us-east-1"
+  default     = "eastus"
 }
 
 variable "project" {
-  description = "Nombre del proyecto"
+  description = "Nombre del proyecto (separado del otro proyecto del equipo)"
   type        = string
   default     = "examen-parcial"
 }
@@ -19,26 +19,49 @@ variable "team" {
 variable "environment" {
   description = "Ambiente"
   type        = string
-  default     = "prod"
+  default     = "t5"
 }
 
-variable "admin_ip" {
-  description = "IP autorizada para SSH (CIDR). Ej: 1.2.3.4/32. Obligatorio para cumplir condicion de limitar acceso administrativo."
+variable "resource_group_name" {
+  description = "RG dedicado SOLO a este taller (no mezclar con el otro proyecto)"
   type        = string
-  # Por defecto cerrado; el workflow falla si no se define por secret/var
-  default = ""
+  default     = "rg-examen-parcial-t5"
 }
 
-variable "instance_type" {
-  description = "Tipo de instancia (limite de costo)"
+variable "acr_name" {
+  description = "Nombre globalmente unico del ACR (solo minusculas y numeros, 5-50 chars). Si colisiona, cambiar el sufijo."
   type        = string
-  default     = "t3.micro"
+  default     = "exparcialt5ody01"
 }
 
-variable "app_port" {
-  description = "Puerto de la app"
+variable "dns_label" {
+  description = "Etiqueta DNS unica del ACI en la region"
+  type        = string
+  default     = "examen-parcial-t5-ody"
+}
+
+variable "container_cpu" {
+  description = "Limite CPU del contenedor (control de costo)"
   type        = number
-  default     = 8080
+  default     = 0.5
+}
+
+variable "container_memory" {
+  description = "Limite memoria GB del contenedor (control de costo)"
+  type        = number
+  default     = 1.0
+}
+
+variable "container_image_tag" {
+  description = "Tag desplegado (stable = ultima estable; un sha = candidata en prueba)"
+  type        = string
+  default     = "stable"
+}
+
+variable "should_fail" {
+  description = "Si true, la app responde 500 para simular version defectuosa (demo de rollback)"
+  type        = bool
+  default     = false
 }
 
 locals {

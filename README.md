@@ -1,93 +1,94 @@
 # examen parcial — Taller 5: Recuperación automática ante un despliegue fallido
-**Equipo: THE ODYSSEY**
+**Equipo: THE ODYSSEY — Azure pago por uso (RG dedicado, separado del otro proyecto)**
 
-App contenerizada en AWS con rollback automático si la prueba de salud o funcional falla.
-Infraestructura como código con Terraform + deploys con GitHub Actions + seguridad con Checkov y Trivy.
+App contenerizada en Azure con rollback automático si la prueba de salud o funcional falla.
+Todo cambio (sano o rollback) pasa por Terraform. Seguridad con Checkov y Trivy.
 
 ## 1. Arquitectura
 
 ```
 GitHub (main)
  ├─ push app/** ──> workflow app.yml ──> build Docker -> Trivy HIGH,CRITICAL
- │                   -> push ECR :<sha> -> SSH a EC2 -> docker run candidata
+ │                   -> push ACR :<sha> -> terraform apply (candidata)
  │                   -> curl /health + /api/hello
- │                   -> OK: retag :stable / FAIL: rollback a :stable + logs
+ │                   -> OK: push :stable + apply estable / FAIL: apply estable + logs + exit 1
  └─ push infra/** ─> workflow infra.yml -> fmt/validate/Checkov -> plan/apply
 
-AWS us-east-1 (tags Team=THE ODYSSEY, Project=examen-parcial, Env=prod)
- VPC 10.5.0.0/16 + IGW + subnet publica + route table
- SG: 80,8080 abiertos / 22 solo ADMIN_IP
- EC2 t3.micro (8GB gp3 cifrado) + perfil IAM ECR-read-only + user_data (docker+nginx)
- ECR examen-parcial-app (scan-on-push, tags :sha y :stable)
+Azure eastus (tags Team=THE ODYSSEY, Project=examen-parcial, Env=t5)
+ RG rg-examen-parcial-t5 (DEDICADO: no toca el otro proyecto)
+ ACR Basic exparcialt5ody01 (admin OFF, scan implicito, :sha + :stable)
+ ACI aci-examen-parcial-t5 (0.5 CPU / 1GB, identidad UserAssigned + rol AcrPull, probes /health)
+ Log Analytics 30 dias (conserva logs del intento fallido)
 ```
 
-Diagrama: ver `docs/arquitectura.mmd` (Mermaid). Costo controlado: t3.micro + 8GB + 1 AZ.
+Diagrama: ver `docs/arquitectura.mmd`. Costo controlado: ACR Basic + ACI 0.5/1GB + 1 región + retención 30 días.
+**No se mezcla con el otro proyecto:** todo vive en `rg-examen-parcial-t5`; para borrar solo ese RG (ver §8).
 
-## 2. Requisitos
+## 2. Prueba local en contenedores (antes de gastar en Azure)
 
-- Cuenta AWS + rol IAM para OIDC (`AWS_ROLE_TO_ASSUME`) o access keys.
-- Secrets en GitHub (nunca en el repo — condición 8):
-  - `AWS_ROLE_TO_ASSUME`, `EC2_HOST` (se actualiza con output de Terraform), `EC2_SSH_KEY`, `ADMIN_IP` (tu IP pública sin /32).
+```bash
+docker build -t odyssey-local -f Dockerfile .
+docker run -d --name odyssey-ok -p 18080:8080 odyssey-local
+curl http://localhost:18080/health      # {"status":"ok"}
+curl http://localhost:18080/api/hello   # Hola THE ODYSSEY
+docker rm -f odyssey-ok
+# Simular version defectuosa (lo que dispara el rollback en la nube):
+docker run -d --name odyssey-fail -p 18081:8080 -e SHOULD_FAIL=true odyssey-local
+curl http://localhost:18081/health      # 500 fail (esperado)
+docker rm -f odyssey-fail
+```
+
+## 3. Requisitos Azure
+
+- Suscripción pago por uso + federated credentials (OIDC) para GitHub. Secrets (nunca en el repo):
+  - `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`.
+- Nombres únicos globales: si el ACR o el `dns_label` colisionan, cambiar `acr_name` / `dns_label` en `infra/terraform/variables.tf` (y el `ACR_NAME` del workflow debe coincidir).
 - Terraform >= 1.6 solo para cambios locales; el CI usa 1.9.0.
 
-## 3. Despliegue desde cero
+## 4. Despliegue desde cero (orden)
 
 ```bash
 cd infra/terraform
 terraform init
 terraform fmt -check -recursive
 terraform validate
-# Checkov local (opcional): checkov -d .
-terraform plan -var="admin_ip=$(curl -s ifconfig.me)/32" -out=tfplan
-terraform apply tfplan
-terraform output app_url   # -> http://<IP>/health
-# Guarda la IP en el secret EC2_HOST de GitHub
-# Primer estable:
-docker build -t <ECR>:stable -f ../../Dockerfile ../..
-docker push <ECR>:stable
-echo "<ECR>:stable" > ../../stable-image.txt
+terraform plan -out=tfplan
+terraform apply tfplan            # el ACI queda en ImagePull hasta el primer push (normal)
+terraform output app_url          # http://<fqdn>:8080/health
+# Primer estable: Actions > app-build-deploy-rollback > Run workflow (should_fail=false)
+# o push a app/**. El workflow publica :sha, la prueba y la promueve a :stable.
 ```
 
-## 4. Variables
+## 5. Variables
 
 | Variable | Dónde | Default |
 |---|---|---|
-| `aws_region` | infra/terraform | us-east-1 |
-| `instance_type` | infra/terraform | t3.micro (límite costo) |
-| `admin_ip` | secret ADMIN_IP | "" (SSH cerrado si vacío) |
-| `APP_VERSION` / `SHOULD_FAIL` | Dockerfile / workflow input | stable / false |
-| `AWS_REGION`, `ECR_REPO` | workflows env | us-east-1, examen-parcial-app |
+| `location` | terraform | eastus |
+| `resource_group_name` | terraform | rg-examen-parcial-t5 |
+| `acr_name` | terraform + workflow env ACR_NAME | exparcialt5ody01 |
+| `container_cpu` / `container_memory` | terraform | 0.5 / 1.0 (límite costo) |
+| `container_image_tag` / `should_fail` | terraform (las mueve el workflow) | stable / false |
+| `APP_VERSION` / `SHOULD_FAIL` | env del contenedor | tag / false |
 
-## 5. Cómo probar
+## 6. Cómo probar / demos
 
-- Sana: `curl http://<IP>/health` -> `{"status":"ok"}` y `/api/hello` -> `Hola THE ODYSSEY`.
-- Demo de rollback (requisito del taller 5): Actions > app-build-deploy-rollback > Run workflow > `should_fail=true`. El workflow despliega candidata con `SHOULD_FAIL=true`, falla health/ funcional, restaura `:stable` automáticamente, guarda `logs/` y marca el run en rojo-pero-recuperado. Esa es la evidencia.
+- Sana: `curl http://<fqdn>:8080/health` -> `{"status":"ok"}` y `/api/hello` -> `Hola THE ODYSSEY`.
+- Demo de rollback (requisito del taller 5): Actions > app-build-deploy-rollback > Run workflow > `should_fail=true`. Despliega candidata con `SHOULD_FAIL=true` vía Terraform, falla salud/funcional, reaplica `:stable` vía Terraform, guarda `logs/` + `az container logs` y falla el job a propósito. Esa es la evidencia.
 - Cambio de app: edita `app/app.py` y push -> nuevo deploy automático.
-- Cambio de infra: edita `infra/terraform/*` (ej. `instance_type`) -> fmt/validate/Checkov/apply.
+- Cambio de infra: edita `infra/terraform/*` -> fmt/validate/Checkov/apply.
 
-## 6. Evidencias (carpeta docs/evidencias)
+## 7. Evidencias (`docs/evidencias`)
 
-Guardar: URL repo, URL app, runs de Actions, SARIF de Checkov/Trivy, capturas del rollback, `logs/deploy-*.log`, outputs de Terraform. Plantilla en `docs/evidencias/PLANTILLA.md`.
+URL repo, URL app, runs de Actions, SARIF Checkov/Trivy, `logs/deploy-*.log` + `aci-failed-attempt.log`, capturas `curl` antes/después. Plantilla en `docs/evidencias/PLANTILLA.md`.
 
-## 7. Procedimiento de recuperación (resumen)
-
-1. Workflow conserva `:stable` intacto hasta que la candidata pasa salud+funcional.
-2. Si falla: `docker pull :stable && docker rm -f app && docker run :stable`, verifica `/health`, conserva log y falla el job a propósito para dejar evidencia.
-3. Si pasa: `docker tag candidata :stable && push`, actualiza `stable-image.txt`.
-4. Trivy bloquea ANTES de pushear si hay HIGH/CRITICAL; el fallo funcional es posterior y es el que dispara rollback (no confundir).
-
-## 8. Destruir (capacidad de destrucción — 10% rúbrica)
+## 8. Destruir (solo este taller, sin tocar el otro proyecto)
 
 ```bash
 cd infra/terraform
-terraform destroy -var="admin_ip=$(curl -s ifconfig.me)/32"
-# Verifica en consola AWS que no queden EC2/EIP/ECR (ECR tiene force_delete=true).
+terraform destroy
+# o: az group delete -n rg-examen-parcial-t5 --yes  (borra TODO lo del taller y nada mas)
 ```
 
 ## 9. Decisiones, limitaciones y mejoras
 
 Ver `docs/DECISIONES.md`.
-
-## 10. Nota sobre tu Azure PAYG
-
-Tu Azure pago-por-uso **sí sirve y no afecta** tu otro proyecto si usas otro resource group + tags + límites. Este taller se entrega en AWS (tu elección), así que no tocas Azure. Si quisieras portarlo, equivale a: ACR + ACI/Container Apps + Terraform azurerm.

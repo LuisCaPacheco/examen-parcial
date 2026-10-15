@@ -1,146 +1,110 @@
-# Red minima + EC2 + ECR para el taller 5
-# checkov:skip=CKV_AWS_8:logs de ECR no requeridos para taller de bajo costo (documentado en README)
+# Taller 5 en Azure: RG dedicado + ACR Basic + ACI con identidad administrada + Log Analytics
+# checkov:skip=CKV_AZURE_139:ACR Basic sin replicacion geografica es intencional (bajo costo taller)
 
-resource "aws_vpc" "main" {
-  cidr_block           = "10.5.0.0/16"
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-  tags                 = merge(local.common_tags, { Name = "${var.project}-vpc" })
+resource "azurerm_resource_group" "taller" {
+  name     = var.resource_group_name
+  location = var.location
+  tags     = local.common_tags
 }
 
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-  tags   = merge(local.common_tags, { Name = "${var.project}-igw" })
+resource "azurerm_container_registry" "app" {
+  name                = var.acr_name
+  resource_group_name = azurerm_resource_group.taller.name
+  location            = azurerm_resource_group.taller.location
+  sku                 = "Basic" # limite de costo
+  admin_enabled       = false   # sin credenciales admin: se usa identidad administrada
+  tags                = local.common_tags
 }
 
-resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.5.1.0/24"
-  map_public_ip_on_launch = true
-  availability_zone       = "${var.aws_region}a"
-  tags                    = merge(local.common_tags, { Name = "${var.project}-public" })
+resource "azurerm_log_analytics_workspace" "app" {
+  name                = "${var.project}-logs-${var.environment}"
+  resource_group_name = azurerm_resource_group.taller.name
+  location            = azurerm_resource_group.taller.location
+  sku                 = "PerGB2018"
+  retention_in_days   = 30 # limite de costo + conserva evidencias del intento fallido
+  tags                = local.common_tags
 }
 
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
-  }
-  tags = merge(local.common_tags, { Name = "${var.project}-rt" })
+# Identidad administrada asignada por usuario: el ACI hace pull del ACR sin guardar secretos
+resource "azurerm_user_assigned_identity" "aci" {
+  name                = "id-${var.project}-${var.environment}"
+  resource_group_name = azurerm_resource_group.taller.name
+  location            = azurerm_resource_group.taller.location
+  tags                = local.common_tags
 }
 
-resource "aws_route_table_association" "public" {
-  subnet_id      = aws_subnet.public.id
-  route_table_id = aws_route_table.public.id
+resource "azurerm_role_assignment" "aci_acr_pull" {
+  scope                = azurerm_container_registry.app.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.aci.principal_id
 }
 
-resource "aws_security_group" "app" {
-  name        = "${var.project}-app-sg"
-  description = "SG app taller 5"
-  vpc_id      = aws_vpc.main.id
-  tags        = merge(local.common_tags, { Name = "${var.project}-sg" })
+resource "azurerm_container_group" "app" {
+  name                = "aci-${var.project}-${var.environment}"
+  resource_group_name = azurerm_resource_group.taller.name
+  location            = azurerm_resource_group.taller.location
+  ip_address_type     = "Public"
+  dns_name_label      = var.dns_label
+  os_type             = "Linux"
+  restart_policy      = "Always"
 
-  # HTTP app: abierto (la app es publica por requisito de entregable URL publica)
-  ingress {
-    description = "app http"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # Puerto directo de la app solo para health-check interno (opcional)
-  ingress {
-    description = "app direct"
-    from_port   = 8080
-    to_port     = 8080
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.aci.id]
   }
 
-  # SSH limitado a IP autorizada (condicion obligatoria taller 2/5)
-  ingress {
-    description = "ssh admin"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = var.admin_ip != "" ? [var.admin_ip] : ["127.0.0.1/32"]
+  container {
+    name   = "app"
+    image  = "${azurerm_container_registry.app.login_server}/app:${var.container_image_tag}"
+    cpu    = var.container_cpu    # limite de recursos
+    memory = var.container_memory # limite de recursos
+
+    ports {
+      port     = 8080
+      protocol = "TCP"
+    }
+
+    environment_variables = {
+      APP_VERSION = var.container_image_tag
+      SHOULD_FAIL = var.should_fail ? "true" : "false"
+    }
+
+    liveness_probe {
+      http_get {
+        path   = "/health"
+        port   = 8080
+        scheme = "Http"
+      }
+      initial_delay_seconds = 15
+      period_seconds        = 15
+      failure_threshold     = 3
+    }
+    readiness_probe {
+      http_get {
+        path   = "/health"
+        port   = 8080
+        scheme = "Http"
+      }
+      initial_delay_seconds = 10
+      period_seconds        = 10
+      failure_threshold     = 3
+    }
   }
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  # Sin username/password: la identidad con rol AcrPull autentica contra el ACR
+  image_registry_credential {
+    server                 = azurerm_container_registry.app.login_server
+    user_assigned_identity_id = azurerm_user_assigned_identity.aci.id
   }
-}
 
-# AMI Amazon Linux 2023 mas reciente (x86_64)
-data "aws_ami" "al2023" {
-  most_recent = true
-  owners      = ["amazon"]
-  filter {
-    name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+  diagnostics {
+    log_analytics {
+      workspace_id  = azurerm_log_analytics_workspace.app.workspace_id
+      workspace_key = azurerm_log_analytics_workspace.app.primary_shared_key
+    }
   }
-}
 
-resource "aws_ecr_repository" "app" {
-  name                 = "${var.project}-app"
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
-  tags                 = local.common_tags
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-}
-
-resource "aws_iam_role" "ec2_ecr" {
-  name = "${var.project}-ec2-ecr"
   tags = local.common_tags
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
-}
 
-resource "aws_iam_role_policy_attachment" "ecr_read" {
-  role       = aws_iam_role.ec2_ecr.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-resource "aws_iam_instance_profile" "ec2" {
-  name = "${var.project}-ec2-profile"
-  role = aws_iam_role.ec2_ecr.name
-  tags = local.common_tags
-}
-
-resource "aws_instance" "app" {
-  ami                    = data.aws_ami.al2023.id
-  instance_type          = var.instance_type # t3.micro = limite de costo
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.app.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2.name
-
-  # Limite de costo: disco pequeno
-  root_block_device {
-    volume_size           = 8
-    volume_type           = "gp3"
-    encrypted             = true
-    delete_on_termination = true
-  }
-
-  user_data = templatefile("${path.module}/user_data.sh", {
-    ecr_url  = aws_ecr_repository.app.repository_url
-    app_port = var.app_port
-  })
-  user_data_replace_on_change = true
-
-  tags = merge(local.common_tags, { Name = "${var.project}-app" })
+  depends_on = [azurerm_role_assignment.aci_acr_pull]
 }

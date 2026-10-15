@@ -7,6 +7,7 @@ on:
       - 'app/**'
       - 'Dockerfile'
       - '.github/workflows/app*.yml'
+      - 'scripts/**'
   workflow_dispatch:
     inputs:
       should_fail:
@@ -16,47 +17,43 @@ on:
 
 permissions:
   contents: read
-  id-token: write  # OIDC hacia AWS (recomendado). Si usan keys, se usan secrets.
+  id-token: write  # OIDC hacia Azure (federated credentials, sin secretos de larga vida)
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REPO: examen-parcial-app
+  ACR_NAME: exparcialt5ody01
+  IMAGE_NAME: app
+  RG: rg-examen-parcial-t5
+  ACI_NAME: aci-examen-parcial-t5
 
 jobs:
   build-scan-push:
     runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.img.outputs.image }}
+      tag: ${{ steps.img.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Login ECR
-        id: login
-        uses: aws-actions/amazon-ecr-login@v2
+      - name: ACR login
+        run: az acr login --name ${{ env.ACR_NAME }}
 
-      - name: Build image
+      - name: Build candidate
         id: img
         run: |
-          REG=${{ steps.login.outputs.registry }}
           SHA=${GITHUB_SHA::12}
-          IMG=$REG/${{ env.ECR_REPO }}:$SHA
-          echo "image=$IMG" >> $GITHUB_OUTPUT
-          docker build -t $IMG \
-            --build-arg APP_VERSION=$SHA \
-            -f Dockerfile .
-          # Inyecta version: re-tag con env
-          echo $IMG > /tmp/candidate.txt
+          echo "tag=$SHA" >> $GITHUB_OUTPUT
+          docker build -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:$SHA -f Dockerfile .
 
       - name: Trivy scan (bloquea HIGH,CRITICAL)
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ${{ steps.img.outputs.image }}
+          image-ref: ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.img.outputs.tag }}
           format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
@@ -64,7 +61,7 @@ jobs:
 
       - name: Push candidate
         if: success()
-        run: docker push ${{ steps.img.outputs.image }}
+        run: docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.img.outputs.tag }}
 
       - name: Upload Trivy evidence
         if: always()
@@ -79,18 +76,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy candidate to EC2 + health + functional + rollback
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+          terraform_wrapper: false
+
+      - name: Deploy candidate + health + funcional + rollback
         env:
-          CANDIDATE: ${{ needs.build-scan-push.outputs.image }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ec2-user
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          CANDIDATE_TAG: ${{ needs.build-scan-push.outputs.tag }}
           FAIL_MODE: ${{ inputs.should_fail }}
         run: |
           chmod +x scripts/deploy_with_rollback.sh

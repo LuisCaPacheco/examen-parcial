@@ -1,14 +1,19 @@
-output "public_ip" {
-  description = "IP publica de la app"
-  value       = aws_instance.app.public_ip
+output "resource_group" {
+  description = "RG dedicado del taller (separado del otro proyecto)"
+  value       = azurerm_resource_group.taller.name
+}
+
+output "acr_login_server" {
+  description = "Servidor del ACR"
+  value       = azurerm_container_registry.app.login_server
+}
+
+output "container_fqdn" {
+  description = "FQDN publico del ACI"
+  value       = azurerm_container_group.app.fqdn
 }
 
 output "app_url" {
-  description = "URL publica de la aplicacion"
-  value       = "http://${aws_instance.app.public_ip}/health"
-}
-
-output "ecr_url" {
-  description = "URL del repositorio ECR"
-  value       = aws_ecr_repository.app.repository_url
+  description = "URL publica de la aplicacion (salud)"
+  value       = "http://${azurerm_container_group.app.fqdn}:8080/health"
 }

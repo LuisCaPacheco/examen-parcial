@@ -1,67 +1,77 @@
 #!/bin/bash
-# Despliega candidata, prueba salud + funcional, rollback a :stable si falla.
-# Requiere env: CANDIDATE, EC2_HOST, EC2_USER, EC2_SSH_KEY, AWS_REGION, ECR_REPO, FAIL_MODE
+# Taller 5 en Azure: despliega candidata con Terraform, prueba salud + funcional,
+# y hace rollback a :stable (tambien con Terraform) si alguna prueba falla.
+# Todo cambio pasa por Terraform: no hay drift, la version estable queda declarada en el estado.
+# Requiere env: CANDIDATE_TAG, FAIL_MODE(true/false), ACR_NAME, IMAGE_NAME, RG, ACI_NAME
+# Requiere: az login (OIDC en el workflow), terraform, docker, curl.
 set -e
-ECR_BASE=$(echo "$CANDIDATE" | cut -d: -f1)
-STABLE="$ECR_BASE:stable"
-SHOULD_FAIL="${FAIL_MODE:-false}"
+TF_DIR="infra/terraform"
+LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+CANDIDATE="${LOGIN_SERVER}/${IMAGE_NAME}:${CANDIDATE_TAG}"
+STABLE="${LOGIN_SERVER}/${IMAGE_NAME}:stable"
+SHOULD_FAIL="$(echo "${FAIL_MODE:-false}" | tr '[:upper:]' '[:lower:]')"
 LOGDIR="logs"; mkdir -p "$LOGDIR"
 LOG="$LOGDIR/deploy-$(date +%Y%m%d-%H%M%S).log"
-exec | tee "$LOG"
+exec > >(tee "$LOG") 2>&1
 
 echo "== CANDIDATE=$CANDIDATE =="
 echo "== STABLE=$STABLE SHOULD_FAIL=$SHOULD_FAIL =="
 
-echo "$EC2_SSH_KEY" > /tmp/ec2key.pem
-chmod 600 /tmp/ec2key.pem
-SSH="ssh -i /tmp/ec2key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST"
+wait_healthy() { # $1 = base_url
+  for i in $(seq 1 30); do
+    if curl -fsS --max-time 10 "$1/health" 2>/dev/null | tee /tmp/health.json; then
+      echo "health OK (intento $i)"
+      return 0
+    fi
+    echo "esperando app... intento $i/30"
+    sleep 20
+  done
+  echo "health NUNCA respondio"
+  return 1
+}
 
-# 1. Desplegar candidata
-$SSH "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_BASE"
-$SSH "docker pull $CANDIDATE && docker rm -f app || true"
-if [ "$SHOULD_FAIL" = "true" ]; then
-  $SSH "docker run -d --name app --restart unless-stopped -p 8080:8080 -e APP_VERSION=candidate-fail -e SHOULD_FAIL=true $CANDIDATE"
-else
-  $SSH "docker pull $CANDIDATE && docker run -d --name app --restart unless-stopped -p 8080:8080 -e APP_VERSION=$(echo $CANDIDATE | rev | cut -d: -f1 | rev) -e SHOULD_FAIL=false $CANDIDATE"
-fi
-sleep 12
+# 1. Desplegar candidata via Terraform
+terraform -chdir="$TF_DIR" init -input=false
+terraform -chdir="$TF_DIR" apply -auto-approve -input=false \
+  -var="container_image_tag=${CANDIDATE_TAG}" \
+  -var="should_fail=${SHOULD_FAIL}"
+FQDN=$(terraform -chdir="$TF_DIR" output -raw container_fqdn)
+BASE="http://${FQDN}:8080"
+echo "== BASE=$BASE =="
 
-# 2. Prueba de salud + funcional
-BASE="http://$EC2_HOST"
-echo "--- health check $BASE/health ---"
-if curl -fsS --max-time 15 "$BASE/health" | tee /tmp/health.json; then
-  echo "health OK"
-  HEALTH=0
-else
-  echo "health FAIL"
-  HEALTH=1
-fi
-
+# 2. Prueba de salud + funcional sencilla
+HEALTH=0; FUNC=0
+wait_healthy "$BASE" || HEALTH=1
 echo "--- functional check $BASE/api/hello ---"
-if [ $HEALTH -eq 0 ] && curl -fsS --max-time 15 "$BASE/api/hello" | grep -q "Hola"; then
+if [ "$HEALTH" -eq 0 ] && curl -fsS --max-time 15 "$BASE/api/hello" | grep -q "Hola"; then
   echo "functional OK"
-  FUNC=0
 else
   echo "functional FAIL"
   FUNC=1
 fi
 
-# 3. Decision: promover o rollback
-if [ $HEALTH -eq 0 ] && [ $FUNC -eq 0 ]; then
-  echo "PROMOTE candidate -> stable"
-  aws ecr batch-get-image --region "$AWS_REGION" --repository-name "$ECR_REPO" --image-ids imageTag=$(echo "$CANDIDATE" | rev | cut -d: -f1 | rev) >/dev/null
-  # Retag local y push como stable
-  docker pull "$CANDIDATE" || true
-  docker tag "$CANDIDATE" "$STABLE" || true
-  docker push "$STABLE" || true
-  echo "$CANDIDATE" > stable-image.txt
+# 3. Decision: promover o rollback (ambos via Terraform, sin drift)
+if [ "$HEALTH" -eq 0 ] && [ "$FUNC" -eq 0 ]; then
+  echo "PROMOTE candidata -> stable"
+  az acr login --name "$ACR_NAME"
+  docker pull "$CANDIDATE"
+  docker tag "$CANDIDATE" "$STABLE"
+  docker push "$STABLE"
+  # Deja el estado declarado en la nueva estable
+  terraform -chdir="$TF_DIR" apply -auto-approve -input=false \
+    -var="container_image_tag=stable" -var="should_fail=false"
+  echo "$STABLE <= $CANDIDATE" > stable-image.txt
   echo "DEPLOY OK - sin rollback"
 else
-  echo "ROLLBACK a $STABLE"
-  $SSH "docker pull $STABLE && docker rm -f app; docker run -d --name app --restart unless-stopped -p 8080:8080 $STABLE"
-  sleep 8
-  curl -fsS --max-time 15 "$BASE/health" | tee /tmp/health-rollback.json
-  echo "ROLLBACK OK - version estable restaurada. Evidencia en $LOG"
-  echo "Intento fallido conservado en logs/ y artefacto del workflow."
-  exit 1  # marca el workflow como fallido-pero-recuperado (evidencia pedida)
+  echo "ROLLBACK a $STABLE (via Terraform)"
+  az container logs --resource-group "$RG" --name "$ACI_NAME" --container-name app \
+    > "$LOGDIR/aci-failed-attempt.log" 2>&1 || true
+  terraform -chdir="$TF_DIR" apply -auto-approve -input=false \
+    -var="container_image_tag=stable" -var="should_fail=false"
+  FQDN=$(terraform -chdir="$TF_DIR" output -raw container_fqdn)
+  BASE="http://${FQDN}:8080"
+  wait_healthy "$BASE"
+  curl -fsS --max-time 15 "$BASE/api/hello" | grep -q "Hola"
+  echo "ROLLBACK OK - version estable restaurada. Evidencias: $LOG + $LOGDIR/aci-failed-attempt.log"
+  exit 1  # fallo intencional: deja evidencia del intento fallido + rollback en el workflow
 fi
