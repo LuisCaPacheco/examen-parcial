@@ -23,6 +23,8 @@ concurrency:
 
 env:
   TF_DIR: infra/terraform
+  ACR_NAME: exparcialt5ody01
+  IMAGE_NAME: app
   TF_BACKEND_RG: rg-tfstate-examen
   TF_BACKEND_SA: stexparcialt5ody01
   TF_BACKEND_CONTAINER: tfstate
@@ -81,6 +83,16 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: decide image (bootstrap si aun no hay :stable)
+        id: img
+        run: |
+          if az acr repository show-tags --name ${{ env.ACR_NAME }} --repository ${{ env.IMAGE_NAME }} 2>/dev/null | grep -q '"stable"'; then
+            echo "image=${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:stable" >> $GITHUB_OUTPUT
+            echo "version=stable" >> $GITHUB_OUTPUT
+          else
+            echo "image=mcr.microsoft.com/azuredocs/aci-helloworld:latest" >> $GITHUB_OUTPUT
+            echo "version=bootstrap" >> $GITHUB_OUTPUT
+          fi
       - name: init/plan/apply
         run: |
           terraform -chdir=${{ env.TF_DIR }} init \
@@ -88,7 +100,10 @@ jobs:
             -backend-config="storage_account_name=${{ env.TF_BACKEND_SA }}" \
             -backend-config="container_name=${{ env.TF_BACKEND_CONTAINER }}" \
             -backend-config="key=${{ env.TF_BACKEND_KEY }}"
-          terraform -chdir=${{ env.TF_DIR }} plan -out=tfplan
+          # Los applys de infra fijan la estable (la candidata solo la mueve el workflow de app)
+          terraform -chdir=${{ env.TF_DIR }} plan -out=tfplan \
+            -var="container_image=${{ steps.img.outputs.image }}" \
+            -var="app_version=${{ steps.img.outputs.version }}" -var="should_fail=false"
           terraform -chdir=${{ env.TF_DIR }} apply -auto-approve tfplan
           terraform -chdir=${{ env.TF_DIR }} output -json | tee infra-outputs.json
       - name: Upload outputs

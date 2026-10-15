@@ -52,10 +52,16 @@ variable "container_memory" {
   default     = 1.0
 }
 
-variable "container_image_tag" {
-  description = "Tag desplegado (stable = ultima estable; un sha = candidata en prueba)"
+variable "container_image" {
+  description = "Imagen completa desplegada. Default: bootstrap publico para el primer apply (luego el workflow la mueve a ACR:stable/candidata)"
   type        = string
-  default     = "stable"
+  default     = "mcr.microsoft.com/azuredocs/aci-helloworld:latest"
+}
+
+variable "app_version" {
+  description = "Version reportada por la app (tag)"
+  type        = string
+  default     = "bootstrap"
 }
 
 variable "should_fail" {

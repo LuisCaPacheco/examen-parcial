@@ -65,7 +65,7 @@ resource "azurerm_container_group" "app" {
 
   container {
     name   = "app"
-    image  = "${azurerm_container_registry.app.login_server}/app:${var.container_image_tag}"
+    image  = var.container_image
     cpu    = var.container_cpu    # limite de recursos
     memory = var.container_memory # limite de recursos
 
@@ -75,7 +75,7 @@ resource "azurerm_container_group" "app" {
     }
 
     environment_variables = {
-      APP_VERSION = var.container_image_tag
+      APP_VERSION = var.app_version
       SHOULD_FAIL = var.should_fail ? "true" : "false"
     }
 

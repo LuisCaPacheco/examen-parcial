@@ -2,7 +2,8 @@
 # Taller 5 en Azure: despliega candidata con Terraform, prueba salud + funcional,
 # y hace rollback a :stable (tambien con Terraform) si alguna prueba falla.
 # Todo cambio pasa por Terraform: no hay drift, la version estable queda declarada en el estado.
-# Requiere env: CANDIDATE_TAG, FAIL_MODE(true/false), ACR_NAME, IMAGE_NAME, RG, ACI_NAME
+# Requiere env: CANDIDATE_TAG, FAIL_MODE(true/false), ACR_NAME, IMAGE_NAME, RG, ACI_NAME,
+#   TF_BACKEND_RG, TF_BACKEND_SA, TF_BACKEND_CONTAINER, TF_BACKEND_KEY
 # Requiere: az login (OIDC en el workflow), terraform, docker, curl.
 set -e
 TF_DIR="infra/terraform"
@@ -16,6 +17,11 @@ exec > >(tee "$LOG") 2>&1
 
 echo "== CANDIDATE=$CANDIDATE =="
 echo "== STABLE=$STABLE SHOULD_FAIL=$SHOULD_FAIL =="
+
+tf_apply() { # $1=image $2=version $3=should_fail
+  terraform -chdir="$TF_DIR" apply -auto-approve -input=false \
+    -var="container_image=$1" -var="app_version=$2" -var="should_fail=$3"
+}
 
 wait_healthy() { # $1 = base_url
   for i in $(seq 1 30); do
@@ -36,9 +42,7 @@ terraform -chdir="$TF_DIR" init -input=false \
   -backend-config="storage_account_name=${TF_BACKEND_SA:?}" \
   -backend-config="container_name=${TF_BACKEND_CONTAINER:?}" \
   -backend-config="key=${TF_BACKEND_KEY:?}"
-terraform -chdir="$TF_DIR" apply -auto-approve -input=false \
-  -var="container_image_tag=${CANDIDATE_TAG}" \
-  -var="should_fail=${SHOULD_FAIL}"
+tf_apply "$CANDIDATE" "$CANDIDATE_TAG" "$SHOULD_FAIL"
 FQDN=$(terraform -chdir="$TF_DIR" output -raw container_fqdn)
 BASE="http://${FQDN}:8080"
 echo "== BASE=$BASE =="
@@ -62,16 +66,14 @@ if [ "$HEALTH" -eq 0 ] && [ "$FUNC" -eq 0 ]; then
   docker tag "$CANDIDATE" "$STABLE"
   docker push "$STABLE"
   # Deja el estado declarado en la nueva estable
-  terraform -chdir="$TF_DIR" apply -auto-approve -input=false \
-    -var="container_image_tag=stable" -var="should_fail=false"
+  tf_apply "$STABLE" "stable" "false"
   echo "$STABLE <= $CANDIDATE" > stable-image.txt
   echo "DEPLOY OK - sin rollback"
 else
   echo "ROLLBACK a $STABLE (via Terraform)"
   az container logs --resource-group "$RG" --name "$ACI_NAME" --container-name app \
     > "$LOGDIR/aci-failed-attempt.log" 2>&1 || true
-  terraform -chdir="$TF_DIR" apply -auto-approve -input=false \
-    -var="container_image_tag=stable" -var="should_fail=false"
+  tf_apply "$STABLE" "stable" "false"
   FQDN=$(terraform -chdir="$TF_DIR" output -raw container_fqdn)
   BASE="http://${FQDN}:8080"
   wait_healthy "$BASE"
