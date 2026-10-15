@@ -1,5 +1,4 @@
 # Taller 5 en Azure: RG dedicado + ACR Basic + ACI con identidad administrada + Log Analytics
-# checkov:skip=CKV_AZURE_139:ACR Basic sin replicacion geografica es intencional (bajo costo taller)
 
 resource "azurerm_resource_group" "taller" {
   name     = var.resource_group_name
@@ -7,6 +6,14 @@ resource "azurerm_resource_group" "taller" {
   tags     = local.common_tags
 }
 
+#checkov:skip=CKV_AZURE_139:Basic sin endpoint privado por costo del taller; admin OFF + identidad con AcrPull
+#checkov:skip=CKV_AZURE_163:escaneo con Trivy en el pipeline (gate HIGH,CRITICAL) en vez de Defender
+#checkov:skip=CKV_AZURE_164:content trust requiere Premium; se suple con Trivy como gate antes del push
+#checkov:skip=CKV_AZURE_165:geo-replicacion Premium fuera de alcance/costo (1 region)
+#checkov:skip=CKV_AZURE_166:cuarentena Premium; gate con Trivy antes del push
+#checkov:skip=CKV_AZURE_167:retention Premium; tags :sha/:stable controlados por el workflow
+#checkov:skip=CKV_AZURE_233:zone redundancy Premium fuera del costo del taller
+#checkov:skip=CKV_AZURE_237:data endpoints dedicados requieren Premium
 resource "azurerm_container_registry" "app" {
   name                = var.acr_name
   resource_group_name = azurerm_resource_group.taller.name
@@ -39,6 +46,9 @@ resource "azurerm_role_assignment" "aci_acr_pull" {
   principal_id         = azurerm_user_assigned_identity.aci.principal_id
 }
 
+#checkov:skip=CKV_AZURE_98:ACI publico por diseno (URL publica es entregable); sin VNet por costo/complejidad
+#checkov:skip=CKV_AZURE_245:ver CKV_AZURE_98 (misma razon)
+#checkov:skip=CKV_AZURE_235:APP_VERSION y SHOULD_FAIL no son secretos (la version publicada es evidencia del taller)
 resource "azurerm_container_group" "app" {
   name                = "aci-${var.project}-${var.environment}"
   resource_group_name = azurerm_resource_group.taller.name
