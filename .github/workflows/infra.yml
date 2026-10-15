@@ -49,6 +49,10 @@ jobs:
           framework: terraform
           output_format: sarif
           output_file_path: checkov.sarif
+          # Skips justificados (ver comentarios en main.tf y docs/DECISIONES.md):
+          # ACR Basic: 139,163,164,165,166,167,233,237 requieren SKU Premium (fuera de costo).
+          # ACI publico por diseno: 98,245 (URL publica es entregable). 235: env vars no secretas.
+          skip_check: CKV_AZURE_139,CKV_AZURE_163,CKV_AZURE_164,CKV_AZURE_165,CKV_AZURE_166,CKV_AZURE_167,CKV_AZURE_233,CKV_AZURE_237,CKV_AZURE_98,CKV_AZURE_245,CKV_AZURE_235
       - name: Upload Checkov evidence
         if: always()
         uses: actions/upload-artifact@v4
