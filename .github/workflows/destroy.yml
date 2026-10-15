@@ -1,0 +1,43 @@
+name: destroy-taller
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_DIR: infra/terraform
+  TF_BACKEND_RG: rg-tfstate-examen
+  TF_BACKEND_SA: stexparcialt5ody01
+  TF_BACKEND_CONTAINER: tfstate
+  TF_BACKEND_KEY: examen-parcial-t5.tfstate
+  ARM_USE_OIDC: true
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+          terraform_wrapper: false
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: terraform destroy
+        run: |
+          terraform -chdir=${{ env.TF_DIR }} init \
+            -backend-config="resource_group_name=${{ env.TF_BACKEND_RG }}" \
+            -backend-config="storage_account_name=${{ env.TF_BACKEND_SA }}" \
+            -backend-config="container_name=${{ env.TF_BACKEND_CONTAINER }}" \
+            -backend-config="key=${{ env.TF_BACKEND_KEY }}"
+          terraform -chdir=${{ env.TF_DIR }} destroy -auto-approve
