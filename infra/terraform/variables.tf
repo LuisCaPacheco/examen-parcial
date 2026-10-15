@@ -1,7 +1,7 @@
 variable "location" {
-  description = "Region Azure (eastus = bajo costo)"
+  description = "Region Azure (misma que el otro proyecto del equipo)"
   type        = string
-  default     = "eastus"
+  default     = "centralus"
 }
 
 variable "project" {

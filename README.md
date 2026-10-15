@@ -14,7 +14,7 @@ GitHub (main)
  │                   -> OK: push :stable + apply estable / FAIL: apply estable + logs + exit 1
  └─ push infra/** ─> workflow infra.yml -> fmt/validate/Checkov -> plan/apply
 
-Azure eastus (tags Team=THE ODYSSEY, Project=examen-parcial, Env=t5)
+Azure centralus (tags Team=THE ODYSSEY, Project=examen-parcial, Env=t5)
  RG rg-examen-parcial-t5 (DEDICADO: no toca el otro proyecto)
  ACR Basic exparcialt5ody01 (admin OFF, scan implicito, :sha + :stable)
  ACI aci-examen-parcial-t5 (0.5 CPU / 1GB, identidad UserAssigned + rol AcrPull, probes /health)
@@ -48,8 +48,8 @@ az account show  # anota subscriptionId (SUB_ID) y tenantId (TENANT_ID)
 
 **3.1. Storage para el state de Terraform** (los runners son efímeros; sin esto, infra y app se pisan):
 ```bash
-az group create -n rg-tfstate-examen -l eastus
-az storage account create -n stexparcialt5ody01 -g rg-tfstate-examen -l eastus --sku Standard_LRS
+az group create -n rg-tfstate-examen -l centralus
+az storage account create -n stexparcialt5ody01 -g rg-tfstate-examen -l centralus --sku Standard_LRS
 az storage container create -n tfstate --account-name stexparcialt5ody01
 ```
 Si el storage name está ocupado (único global), elige otro y actualiza `TF_BACKEND_SA` en ambos workflows.
@@ -87,7 +87,7 @@ terraform output app_url          # http://<fqdn>:8080/health
 
 | Variable | Dónde | Default |
 |---|---|---|
-| `location` | terraform | eastus |
+| `location` | terraform | centralus |
 | `resource_group_name` | terraform | rg-examen-parcial-t5 |
 | `acr_name` | terraform + workflow env ACR_NAME | exparcialt5ody01 |
 | `container_cpu` / `container_memory` | terraform | 0.5 / 1.0 (límite costo) |
